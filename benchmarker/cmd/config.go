@@ -49,6 +49,7 @@ type Config struct {
 	HttpScheme             string
 	UpdatePercentage       float64
 	UpdateRandomized       bool
+	DeleteOnly             bool
 	UpdateIterations       int
 	Offset                 int
 	CleanupIntervalSeconds int

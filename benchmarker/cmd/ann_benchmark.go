@@ -84,7 +84,6 @@ func intFromUUID(uuidStr string) int {
 
 // Writes a single batch of vectors to Weaviate using gRPC
 func writeChunk(chunk *Batch, client *weaviategrpc.WeaviateClient, cfg *Config) {
-
 	objects := make([]*weaviategrpc.BatchObject, len(chunk.Vectors))
 
 	for i, vector := range chunk.Vectors {
@@ -124,7 +123,6 @@ func writeChunk(chunk *Batch, client *weaviategrpc.WeaviateClient, cfg *Config) 
 			log.Printf("Successfully processed object at index %d", result.Index)
 		}
 	}
-
 }
 
 func createClient(cfg *Config) *weaviate.Client {
@@ -148,7 +146,6 @@ func createClient(cfg *Config) *weaviate.Client {
 
 // Re/create Weaviate schema
 func createSchema(cfg *Config, client *weaviate.Client) {
-
 	err := client.Schema().ClassDeleter().WithClassName(cfg.ClassName).Do(context.Background())
 	if err != nil {
 		log.Fatalf("Error deleting class: %v", err)
@@ -174,6 +171,11 @@ func createSchema(cfg *Config, client *weaviate.Client) {
 			MultiTenancyConfig: &models.MultiTenancyConfig{
 				Enabled: multiTenancyEnabled,
 			},
+		}
+		if cfg.Shards > 1 {
+			classObj.ShardingConfig = map[string]interface{}{
+				"desiredCount": cfg.Shards,
+			}
 		}
 		if cfg.PQ == "auto" {
 			classObj.VectorIndexConfig = map[string]interface{}{
@@ -211,6 +213,11 @@ func createSchema(cfg *Config, client *weaviate.Client) {
 				Enabled: multiTenancyEnabled,
 			},
 		}
+		if cfg.Shards > 1 {
+			classObj.ShardingConfig = map[string]interface{}{
+				"desiredCount": cfg.Shards,
+			}
+		}
 		if cfg.BQ {
 			classObj.VectorIndexConfig = map[string]interface{}{
 				"distance": cfg.DistanceMetric,
@@ -220,7 +227,6 @@ func createSchema(cfg *Config, client *weaviate.Client) {
 					"cache":        true,
 				},
 			}
-
 		}
 
 	} else {
@@ -235,10 +241,19 @@ func createSchema(cfg *Config, client *weaviate.Client) {
 }
 
 func deleteChunk(chunk *Batch, client *weaviate.Client, cfg *Config) {
-	log.Debugf("Deleting chunk of %d vectors index %d", len(chunk.Vectors), chunk.Offset)
+	if cfg.Tenant == "" {
+		log.Debugf("Deleting chunk of %d vectors index %d", len(chunk.Vectors), chunk.Offset)
+	} else {
+		log.Debugf("Deleting chunk of %d vectors index %d tenant %s", len(chunk.Vectors), chunk.Offset, cfg.Tenant)
+	}
 	for i := range chunk.Vectors {
 		uuid := uuidFromInt(i + chunk.Offset + cfg.Offset)
-		err := client.Data().Deleter().WithClassName(cfg.ClassName).WithID(uuid).Do(context.Background())
+		var err error
+		if cfg.Tenant == "" {
+			err = client.Data().Deleter().WithClassName(cfg.ClassName).WithID(uuid).Do(context.Background())
+		} else {
+			err = client.Data().Deleter().WithClassName(cfg.ClassName).WithTenant(cfg.Tenant).WithID(uuid).Do(context.Background())
+		}
 		if err != nil {
 			log.Fatalf("Error deleting object: %v", err)
 		}
@@ -248,7 +263,12 @@ func deleteChunk(chunk *Batch, client *weaviate.Client, cfg *Config) {
 func deleteUuidSlice(cfg *Config, client *weaviate.Client, slice []int) {
 	log.WithFields(log.Fields{"length": len(slice), "class": cfg.ClassName}).Printf("Deleting objects to trigger tombstone operations")
 	for _, i := range slice {
-		err := client.Data().Deleter().WithClassName(cfg.ClassName).WithID(uuidFromInt(i)).Do(context.Background())
+		var err error
+		if cfg.Tenant == "" {
+			err = client.Data().Deleter().WithClassName(cfg.ClassName).WithID(uuidFromInt(i)).Do(context.Background())
+		} else {
+			err = client.Data().Deleter().WithClassName(cfg.ClassName).WithTenant(cfg.Tenant).WithID(uuidFromInt(i)).Do(context.Background())
+		}
 		if err != nil {
 			log.Fatalf("Error deleting object: %v", err)
 		}
@@ -281,7 +301,6 @@ func addTenantIfNeeded(cfg *Config, client *weaviate.Client) {
 
 // Update ef parameter on the Weaviate schema
 func updateEf(ef int, cfg *Config, client *weaviate.Client) {
-
 	if cfg.IndexType == "flat" {
 		return
 	}
@@ -300,11 +319,9 @@ func updateEf(ef int, cfg *Config, client *weaviate.Client) {
 	if err != nil {
 		panic(err)
 	}
-
 }
 
 func waitReady(cfg *Config, client *weaviate.Client, indexStart time.Time, maxDuration time.Duration, minQueueSize int64) time.Time {
-
 	start := time.Now()
 	current := time.Now()
 
@@ -393,7 +410,6 @@ func enablePQ(cfg *Config, client *weaviate.Client, dimensions uint) {
 
 	endTime := time.Now()
 	log.WithFields(log.Fields{"segments": segments, "dimensions": dimensions}).Printf("PQ Completed in %v\n", endTime.Sub(start))
-
 }
 
 func convert1DChunk[D float32 | float64](input []D, dimensions int, batchRows int) [][]float32 {
@@ -408,7 +424,6 @@ func convert1DChunk[D float32 | float64](input []D, dimensions int, batchRows in
 }
 
 func getHDF5ByteSize(dataset *hdf5.Dataset) uint {
-
 	datatype, err := dataset.Datatype()
 	if err != nil {
 		log.Fatalf("Unabled to read datatype\n")
@@ -663,7 +678,6 @@ func loadHdf5Train(file *hdf5.File, cfg *Config, offset uint, maxRows uint, upda
 // Load an hdf5 file in the format of ann-benchmarks.com
 // returns total time duration for load
 func loadANNBenchmarksFile(file *hdf5.File, cfg *Config, client *weaviate.Client, maxRows uint) time.Duration {
-
 	addTenantIfNeeded(cfg, client)
 	startTime := time.Now()
 
@@ -686,7 +700,6 @@ func loadANNBenchmarksFile(file *hdf5.File, cfg *Config, client *weaviate.Client
 
 // Load a dataset multiple time with different tenants
 func loadHdf5MultiTenant(file *hdf5.File, cfg *Config, client *weaviate.Client) time.Duration {
-
 	startTime := time.Now()
 
 	for i := 0; i < cfg.NumTenants; i++ {
@@ -713,7 +726,6 @@ func parseEfValues(s string) ([]int, error) {
 }
 
 func waitTombstonesEmpty(cfg *Config) error {
-
 	prometheusURL := fmt.Sprintf("http://%s/metrics", strings.Replace(cfg.HttpOrigin, "8080", "2112", -1))
 	metricName := "vector_index_tombstones"
 
@@ -765,7 +777,6 @@ func waitTombstonesEmpty(cfg *Config) error {
 }
 
 func runQueries(cfg *Config, importTime time.Duration, testData [][]float32, neighbors [][]int) {
-
 	runID := strconv.FormatInt(time.Now().Unix(), 10)
 
 	efCandidates, err := parseEfValues(cfg.EfArray)
@@ -787,9 +798,11 @@ func runQueries(cfg *Config, importTime time.Duration, testData [][]float32, nei
 			result = benchmarkANN(*cfg, testData, neighbors)
 		}
 
-		log.WithFields(log.Fields{"mean": result.Mean, "qps": result.QueriesPerSecond, "recall": result.Recall,
+		log.WithFields(log.Fields{
+			"mean": result.Mean, "qps": result.QueriesPerSecond, "recall": result.Recall,
 			"parallel": cfg.Parallel, "limit": cfg.Limit,
-			"api": cfg.API, "ef": ef, "count": result.Total, "failed": result.Failed}).Info("Benchmark result")
+			"api": cfg.API, "ef": ef, "count": result.Total, "failed": result.Failed,
+		}).Info("Benchmark result")
 
 		dataset := filepath.Base(cfg.BenchmarkFile)
 
@@ -836,9 +849,9 @@ func runQueries(cfg *Config, importTime time.Duration, testData [][]float32, nei
 		log.Fatalf("Error marshaling benchmark results: %v", err)
 	}
 
-	os.Mkdir("./results", 0755)
+	os.Mkdir("./results", 0o755)
 
-	err = os.WriteFile(fmt.Sprintf("./results/%s.json", runID), data, 0644)
+	err = os.WriteFile(fmt.Sprintf("./results/%s.json", runID), data, 0o644)
 	if err != nil {
 		log.Fatalf("Error writing benchmark results to file: %v", err)
 	}
@@ -849,7 +862,6 @@ var annBenchmarkCommand = &cobra.Command{
 	Short: "Benchmark ANN Benchmark style hdf5 files",
 	Long:  `Run a gRPC benchmark on an hdf5 file in the format of ann-benchmarks.com`,
 	Run: func(cmd *cobra.Command, args []string) {
-
 		cfg := globalConfig
 		cfg.Mode = "ann-benchmark"
 
@@ -875,8 +887,10 @@ var annBenchmarkCommand = &cobra.Command{
 				createSchema(&cfg, client)
 			}
 
-			log.WithFields(log.Fields{"index": cfg.IndexType, "efC": cfg.EfConstruction, "m": cfg.MaxConnections, "shards": cfg.Shards,
-				"distance": cfg.DistanceMetric, "dataset": cfg.BenchmarkFile}).Info("Starting import")
+			log.WithFields(log.Fields{
+				"index": cfg.IndexType, "efC": cfg.EfConstruction, "m": cfg.MaxConnections, "shards": cfg.Shards,
+				"distance": cfg.DistanceMetric, "dataset": cfg.BenchmarkFile,
+			}).Info("Starting import")
 
 			if cfg.NumTenants > 0 {
 				importTime = loadHdf5MultiTenant(file, &cfg, client)
@@ -889,13 +903,13 @@ var annBenchmarkCommand = &cobra.Command{
 			time.Sleep(sleepDuration)
 		}
 
-		log.WithFields(log.Fields{"index": cfg.IndexType, "efC": cfg.EfConstruction, "m": cfg.MaxConnections, "shards": cfg.Shards,
-			"distance": cfg.DistanceMetric, "dataset": cfg.BenchmarkFile}).Info("Benchmark configuration")
+		log.WithFields(log.Fields{
+			"index": cfg.IndexType, "efC": cfg.EfConstruction, "m": cfg.MaxConnections, "shards": cfg.Shards,
+			"distance": cfg.DistanceMetric, "dataset": cfg.BenchmarkFile,
+		}).Info("Benchmark configuration")
 
 		neighbors := loadHdf5Neighbors(file, "neighbors")
 		testData := loadHdf5Float32(file, "test")
-
-		runQueries(&cfg, importTime, testData, neighbors)
 
 		if cfg.performUpdates() {
 
@@ -909,10 +923,29 @@ var annBenchmarkCommand = &cobra.Command{
 				startTime := time.Now()
 
 				if cfg.UpdateRandomized {
-					loadHdf5Train(file, &cfg, 0, 0, float32(cfg.UpdatePercentage))
+					if cfg.NumTenants > 0 {
+						for j := 0; j < cfg.NumTenants; j++ {
+							cfg.Tenant = fmt.Sprintf("%d", j)
+							loadHdf5Train(file, &cfg, 0, 0, float32(cfg.UpdatePercentage))
+						}
+					} else {
+						loadHdf5Train(file, &cfg, 0, 0, float32(cfg.UpdatePercentage))
+					}
 				} else {
-					deleteUuidRange(&cfg, client, 0, int(updateRowCount))
-					loadHdf5Train(file, &cfg, 0, updateRowCount, 0)
+					if cfg.NumTenants > 0 {
+						for j := 0; j < cfg.NumTenants; j++ {
+							cfg.Tenant = fmt.Sprintf("%d", j)
+							deleteUuidRange(&cfg, client, 0, int(updateRowCount))
+							if !cfg.DeleteOnly {
+								loadHdf5Train(file, &cfg, 0, updateRowCount, 0)
+							}
+						}
+					} else {
+						deleteUuidRange(&cfg, client, 0, int(updateRowCount))
+						if !cfg.DeleteOnly {
+							loadHdf5Train(file, &cfg, 0, updateRowCount, 0)
+						}
+					}
 				}
 
 				log.WithFields(log.Fields{"duration": time.Since(startTime)}).Printf("Total delete and update time\n")
@@ -927,7 +960,6 @@ var annBenchmarkCommand = &cobra.Command{
 			}
 
 		}
-
 	},
 }
 
@@ -998,6 +1030,8 @@ func initAnnBenchmark() {
 		"updatePercentage", 0.0, "After loading the dataset, update the specified percentage of vectors")
 	annBenchmarkCommand.PersistentFlags().BoolVar(&globalConfig.UpdateRandomized,
 		"updateRandomized", false, "Whether to randomize which vectors are updated (default false)")
+	annBenchmarkCommand.PersistentFlags().BoolVar(&globalConfig.DeleteOnly,
+		"deleteOnly", false, "Performing only deletes, not updates. Be careful if running multiple iterations (default false)")
 	annBenchmarkCommand.PersistentFlags().IntVar(&globalConfig.UpdateIterations,
 		"updateIterations", 1, "Number of iterations to update the dataset if updatePercentage is set")
 	annBenchmarkCommand.PersistentFlags().IntVar(&globalConfig.CleanupIntervalSeconds,
@@ -1024,7 +1058,6 @@ func benchmarkANN(cfg Config, queries Queries, neighbors Neighbors) Results {
 			Query:     nearVectorQueryGrpc(cfg.ClassName, queries[i], cfg.Limit, tenant),
 			Neighbors: neighbors[i],
 		}
-
 	})
 }
 
@@ -1040,5 +1073,4 @@ func benchmarkANNDuration(cfg Config, queries Queries, neighbors Neighbors) Resu
 	}
 
 	return results
-
 }
